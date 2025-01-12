@@ -1,5 +1,8 @@
 const Product = Parse.Object.extend("Products");
 const Category = Parse.Object.extend("Category");
+const CartItem = Parse.Object.extend("CartItem");
+const OrderItem = Parse.Object.extend("OrderItem");
+const Order = Parse.Object.extend("Order");
 // Use Parse.Cloud.define to define as many cloud functions as you want.
 // For example:
 Parse.Cloud.define("hello", (request) => {
@@ -108,6 +111,78 @@ Parse.Cloud.define("chenge-password",async (request)=>{
 		throw "ERRO";
 	}
 });
+Parse.Cloud.define("add-to-cart", async (request)=>{
+	if(request.params.productId == null) throw "product invalid";
+	if(request.params.quantity == null) throw "quantity invalid";
+	const cartItem = new CartItem();
+	cartItem.set("quantity",request.params.quantity);
+	const product = new Product();
+	product.id = request.params.productId;
+	cartItem.set("product",product);
+	cartItem.set("user",request.user);
+	const cartResult = await cartItem.save(null,{useMasterKey: true});
+	return cartResult.id;
+});
+Parse.Cloud.define("nodify-quantity",async (request)=>{
+	if(request.params.cartItemId == null) throw "invalid cartItem";
+	if(request.params.quantity == null) throw "invalid quantity";
+	const cartItem = new CartItem();
+	cartItem.id = request.params.cartItemId;
+	if(request.params.quantity > 0){
+		cartItem.set("quantity",request.params.quantity);
+		await cartItem.save(null,{useMasterKey: true});
+	}else{
+		await cartItem.destroy({useMasterKey: true});
+	}
+
+});
+Parse.Cloud.define("get-cart-items",async (request)=>{
+	const queryCartItems = new Parse.Query("CartItem");
+	queryCartItems.equalTo("user",request.user);
+	queryCartItems.include("product");
+	queryCartItems.include("product.category");
+	cartResult = await queryCartItems.find({useMasterKey: true});
+	return cartResult.map(function(cartItem){
+		cartItem = cartItem.toJSON();
+		return {
+			id: cartItem.objectId,
+			quantity: cartItem.quantity,
+			product: formaterProduct(cartItem.product),
+
+		}
+	});
+
+});
+
+Parse.Cloud.define("checkout",async (request)=>{
+	if(request.user == null) throw "invalid user";
+	const queryCartItems = new Parse.Query(CartItem);
+	queryCartItems.equalTo("user",request.user);
+	queryCartItems.include("product");
+	cartResultItems = await queryCartItems.find({useMasterKey: true});
+	let total = 0;
+	for(let item of cartResultItems){
+		item = item.toJSON();
+		total += item.quantity * item.product.price;
+	}
+	if(request.params.total != total) throw "total invalid";
+	const order = new Order();
+	order.set("total",total);
+	order.set("user",request.user);
+	const orderResult = await order.save(null,{useMasterKey: true});
+	for(let item of cartResultItems){
+		const orderItem = new OrderItem();
+		orderItem.set("order",orderResult);
+		orderItem.set("product",item.get("product"));
+		orderItem.set("quantity",item.get("quantity"));
+		orderItem.set("price",item.toJSON().product.price);
+
+		await orderItem.save(null,{useMasterKey: true});
+	}
+	await Parse.Object.destroyAll(cartResultItems,{useMasterKey: true});
+	return orderResult.id;
+});
+
 
 function formaterUser(userJSON){
 	return {
@@ -119,6 +194,20 @@ function formaterUser(userJSON){
 		tokem:userJSON.sessionToken
 		
 	};
+}
+function formaterProduct(productJSON){
+	return {
+		id: productJSON.objectId,
+		title: productJSON.title,
+		price: productJSON.price,
+		description: productJSON.description,
+		isSelling: productJSON.isSelling,
+		image: productJSON.image.url != null ? productJSON.image.url: "",
+		category: {
+			title: productJSON.category.title,
+			id: productJSON.category.objectId
+		}
+	}
 }
 
 
